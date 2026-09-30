@@ -66,6 +66,7 @@ export type ExpoFileSystemModule = {
     fileUri: string,
     options?: { idempotent?: boolean }
   ) => Promise<void>;
+  moveAsync: (options: { from: string; to: string }) => Promise<void>;
   downloadAsync: (
     uri: string,
     fileUri: string,

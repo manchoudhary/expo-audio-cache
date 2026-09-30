@@ -22,23 +22,41 @@ export function useAudioCacheDownload(id: string): UseAudioCacheDownloadResult {
 
   useEffect(() => {
     let cancelled = false;
+    // Reset immediately when the id changes so we never show stale progress.
+    setStatus('idle');
+    setProgress(0);
+    setLocalUri(null);
+    setError(null);
 
-    void getEntry(id).then((entry) => {
-      if (cancelled || !entry) {
-        return;
-      }
-      setStatus(entry.status);
-      setProgress(entry.progress ?? (entry.status === 'ready' ? 1 : 0));
-      setLocalUri(entry.status === 'ready' ? entry.localUri : null);
-      setError(
-        entry.status === 'error' && entry.errorMessage
-          ? new Error(entry.errorMessage)
-          : null
-      );
-    });
+    void getEntry(id)
+      .then((entry) => {
+        if (cancelled) {
+          return;
+        }
+        if (!entry) {
+          setStatus('idle');
+          setProgress(0);
+          setLocalUri(null);
+          setError(null);
+          return;
+        }
+        setStatus(entry.status);
+        setProgress(entry.progress ?? (entry.status === 'ready' ? 1 : 0));
+        setLocalUri(entry.status === 'ready' ? entry.localUri : null);
+        setError(
+          entry.status === 'error' && entry.errorMessage
+            ? new Error(entry.errorMessage)
+            : null
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setStatus('idle');
+        }
+      });
 
     const unsubStatus = addStatusListener((entry) => {
-      if (entry.id !== id) {
+      if (cancelled || entry.id !== id) {
         return;
       }
       setStatus(entry.status);
@@ -52,7 +70,7 @@ export function useAudioCacheDownload(id: string): UseAudioCacheDownloadResult {
     });
 
     const unsubProgress = addProgressListener((progressId, value) => {
-      if (progressId !== id) {
+      if (cancelled || progressId !== id) {
         return;
       }
       setProgress(value);

@@ -15,7 +15,7 @@ npm install expo-audio-cache
 yarn add expo-audio-cache
 ```
 
-**Peers:** `expo-file-system` (required). `expo-audio` is the intended consumer but not a hard dependency.
+**Peers:** `expo-file-system` `>=18.0.0` (required). `expo-audio` is the intended consumer but not a hard dependency.
 
 **Platforms:** iOS and Android. Web is not supported (`documentDirectory` is required).
 
@@ -77,6 +77,8 @@ await download('episode-42', 'https://api.example.com/audio/42.mp3', {
 ```
 
 Refresh tokens by calling `configureAudioCache({ headers: { Authorization: ... } })` again when the JWT rotates (safe to call more than once).
+
+Authorization headers are used for the network request only — they are **never** written to `index.json` or resume snapshots.
 
 ## API
 

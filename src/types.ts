@@ -46,11 +46,11 @@ export type ProgressListener = (id: string, progress: number) => void;
 
 export type StatusListener = (entry: CacheEntry) => void;
 
-/** Persisted state for resuming a download after app restart. */
+/** Persisted state for resuming a download after app restart.
+ * Never stores Authorization / cookies — secrets stay in memory only. */
 export type SavableDownload = {
   url: string;
   fileUri: string;
-  options: { headers?: Record<string, string> };
   resumeData?: string;
 };
 

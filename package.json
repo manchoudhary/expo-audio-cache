@@ -1,6 +1,6 @@
 {
   "name": "expo-audio-cache",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Persistent offline download and cache layer for expo-audio",
   "author": "manchoudhary",
   "license": "MIT",
@@ -39,6 +39,8 @@
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "prepare": "bob build",
+    "prepublishOnly": "yarn test && yarn build",
+    "pack:check": "yarn build && npm pack --dry-run",
     "example": "yarn --cwd example"
   },
   "keywords": [
@@ -54,7 +56,7 @@
     "resumable"
   ],
   "peerDependencies": {
-    "expo-file-system": "*",
+    "expo-file-system": ">=18.0.0",
     "react": "*",
     "react-native": "*"
   },

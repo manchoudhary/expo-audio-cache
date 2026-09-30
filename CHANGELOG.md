@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.1
+
+- Harden concurrent downloads (coalesce same-id calls; serialize mutations)
+- Atomic `index.json` writes via temp file + move; recover `.tmp` on boot
+- Reject unsafe cache IDs / directory names; invalidate same-id when URL changes
+- Never persist Authorization/cookies in resume metadata; validate HTTP 200/206 and non-empty files
+- Refresh filesystem sizes for accurate LRU/stats; tighten `expo-file-system` peer to `>=18.0.0`
+- Hook cleanup resets state on id change; `prepublishOnly` runs tests + build
+
 ## 1.0.0
 
 - First stable release metadata for npm (`author`, `repository`, Expo-focused keywords)

@@ -1,5 +1,9 @@
 import { FileSystem } from './fs';
-import { reconcileEntry } from './reconcile';
+import {
+  assertSafeCacheId,
+  assertSafeDirectoryName,
+  reconcileEntry,
+} from './reconcile';
 
 import type { CacheEntry, IndexFile, SavableDownload } from './types';
 
@@ -14,13 +18,15 @@ export class CacheStore {
   private directoryName: string;
   private ready: Promise<void> | null = null;
   private index: IndexFile = emptyIndex();
+  /** Serialize index writes so concurrent upserts don't clobber each other. */
+  private writeChain: Promise<void> = Promise.resolve();
 
   constructor(directoryName: string = DEFAULT_DIRECTORY_NAME) {
-    this.directoryName = directoryName;
+    this.directoryName = assertSafeDirectoryName(directoryName);
   }
 
   setDirectoryName(directoryName: string): void {
-    this.directoryName = directoryName;
+    this.directoryName = assertSafeDirectoryName(directoryName);
     this.ready = null;
   }
 
@@ -38,9 +44,13 @@ export class CacheStore {
     return `${this.getRootUri()}index.json`;
   }
 
+  getIndexTmpUri(): string {
+    return `${this.getRootUri()}index.json.tmp`;
+  }
+
   getFileUri(id: string, url: string): string {
+    const safeId = assertSafeCacheId(id);
     const ext = extensionFromUrl(url);
-    const safeId = sanitizeId(id);
     return `${this.getRootUri()}files/${safeId}${ext}`;
   }
 
@@ -56,6 +66,9 @@ export class CacheStore {
     const filesDir = `${root}files/`;
     await FileSystem.makeDirectoryAsync(filesDir, { intermediates: true });
 
+    // Recover a previous atomic write if the process died mid-rename.
+    await this.recoverTempIndex();
+
     const indexInfo = await FileSystem.getInfoAsync(this.getIndexUri());
     if (indexInfo.exists) {
       try {
@@ -63,6 +76,8 @@ export class CacheStore {
         const parsed = JSON.parse(raw) as IndexFile;
         if (parsed?.version === INDEX_VERSION && parsed.entries && parsed.savable) {
           this.index = parsed;
+          // Drop any accidentally persisted secrets from older versions.
+          this.stripPersistedSecrets();
           await this.reconcileWithFileSystem();
           return;
         }
@@ -72,6 +87,35 @@ export class CacheStore {
     }
     this.index = emptyIndex();
     await this.persist();
+  }
+
+  private stripPersistedSecrets(): void {
+    for (const id of Object.keys(this.index.savable)) {
+      const item = this.index.savable[id] as SavableDownload & {
+        options?: { headers?: Record<string, string> };
+      };
+      if (item && 'options' in item) {
+        const { options: _ignored, ...rest } = item;
+        this.index.savable[id] = rest;
+      }
+    }
+  }
+
+  private async recoverTempIndex(): Promise<void> {
+    const tmp = this.getIndexTmpUri();
+    const finalUri = this.getIndexUri();
+    try {
+      const tmpInfo = await FileSystem.getInfoAsync(tmp);
+      if (!tmpInfo.exists) {
+        return;
+      }
+      const raw = await FileSystem.readAsStringAsync(tmp);
+      JSON.parse(raw); // validate
+      await FileSystem.deleteAsync(finalUri, { idempotent: true });
+      await FileSystem.moveAsync({ from: tmp, to: finalUri });
+    } catch {
+      await FileSystem.deleteAsync(tmp, { idempotent: true }).catch(() => undefined);
+    }
   }
 
   /**
@@ -87,11 +131,14 @@ export class CacheStore {
       if (!entry) {
         continue;
       }
-      const exists = await pathExists(entry.localUri);
+      const info = await safeGetInfo(entry.localUri);
+      const exists = info.exists;
+      const fileBytes = exists && 'size' in info ? (info.size ?? 0) : 0;
       const action = reconcileEntry({
         id,
         entry,
         fileExists: exists,
+        fileBytes,
         hasSavable: Boolean(this.index.savable[id]),
       });
 
@@ -126,6 +173,11 @@ export class CacheStore {
 
   getEntry(id: string): CacheEntry | null {
     return this.index.entries[id] ?? null;
+  }
+
+  /** Update entry in memory only (e.g. progress ticks). Call persist later. */
+  patchEntry(entry: CacheEntry): void {
+    this.index.entries[entry.id] = entry;
   }
 
   listEntries(): CacheEntry[] {
@@ -165,23 +217,58 @@ export class CacheStore {
   async setSavable(id: string, savable: SavableDownload | null): Promise<void> {
     await this.ensureReady();
     if (savable) {
-      this.index.savable[id] = savable;
+      // Never persist headers / tokens.
+      this.index.savable[id] = {
+        url: savable.url,
+        fileUri: savable.fileUri,
+        resumeData: savable.resumeData,
+      };
     } else {
       delete this.index.savable[id];
     }
     await this.persist();
   }
 
+  /** Atomic write: index.json.tmp → move → index.json */
   async persist(): Promise<void> {
-    await FileSystem.writeAsStringAsync(
-      this.getIndexUri(),
-      JSON.stringify(this.index)
-    );
-  }
-}
+    const run = async () => {
+      const finalUri = this.getIndexUri();
+      const tmpUri = this.getIndexTmpUri();
+      const payload = JSON.stringify(this.index);
+      await FileSystem.writeAsStringAsync(tmpUri, payload);
+      await FileSystem.deleteAsync(finalUri, { idempotent: true });
+      await FileSystem.moveAsync({ from: tmpUri, to: finalUri });
+    };
 
-export function sanitizeId(id: string): string {
-  return id.replace(/[^a-zA-Z0-9-_]/g, '_');
+    this.writeChain = this.writeChain.then(run, run);
+    await this.writeChain;
+  }
+
+  /** Re-read file sizes from disk for ready entries (stats accuracy). */
+  async refreshReadyBytes(): Promise<void> {
+    await this.ensureReady();
+    let dirty = false;
+    for (const entry of Object.values(this.index.entries)) {
+      if (entry.status !== 'ready') {
+        continue;
+      }
+      const info = await safeGetInfo(entry.localUri);
+      if (!info.exists) {
+        delete this.index.entries[entry.id];
+        delete this.index.savable[entry.id];
+        dirty = true;
+        continue;
+      }
+      const size = 'size' in info ? (info.size ?? 0) : 0;
+      if (size !== entry.bytes) {
+        this.index.entries[entry.id] = { ...entry, bytes: size };
+        dirty = true;
+      }
+    }
+    if (dirty) {
+      await this.persist();
+    }
+  }
 }
 
 export function extensionFromUrl(url: string): string {
@@ -197,12 +284,11 @@ export function extensionFromUrl(url: string): string {
   return '.mp3';
 }
 
-async function pathExists(uri: string): Promise<boolean> {
+async function safeGetInfo(uri: string) {
   try {
-    const info = await FileSystem.getInfoAsync(uri);
-    return info.exists;
+    return await FileSystem.getInfoAsync(uri);
   } catch {
-    return false;
+    return { exists: false as const, uri };
   }
 }
 

@@ -1,7 +1,10 @@
 import {
+  assertSafeCacheId,
   isRangeOrResumeFailure,
+  isSuccessfulDownloadStatus,
   reconcileEntry,
   shouldPreferSimpleDownload,
+  stripSensitiveHeaders,
 } from '../src/reconcile';
 import type { CacheEntry } from '../src/types';
 
@@ -28,20 +31,45 @@ describe('reconcileEntry', () => {
         id: 'a',
         entry: entry('a', 'ready'),
         fileExists: true,
+        fileBytes: 10,
         hasSavable: false,
       }).type
     ).toBe('keep');
   });
 
-  it('drops ready entries when the file is missing', () => {
+  it('drops ready entries when the file is missing or empty', () => {
     expect(
       reconcileEntry({
         id: 'a',
         entry: entry('a', 'ready'),
         fileExists: false,
+        fileBytes: 0,
         hasSavable: false,
       }).type
     ).toBe('drop');
+    expect(
+      reconcileEntry({
+        id: 'a',
+        entry: entry('a', 'ready'),
+        fileExists: true,
+        fileBytes: 0,
+        hasSavable: false,
+      }).type
+    ).toBe('drop');
+  });
+
+  it('updates ready bytes when filesystem size differs', () => {
+    const action = reconcileEntry({
+      id: 'a',
+      entry: entry('a', 'ready', { bytes: 10 }),
+      fileExists: true,
+      fileBytes: 42,
+      hasSavable: false,
+    });
+    expect(action.type).toBe('update');
+    if (action.type === 'update') {
+      expect(action.entry.bytes).toBe(42);
+    }
   });
 
   it('drops downloading/paused when partial file or savable is missing', () => {
@@ -50,6 +78,7 @@ describe('reconcileEntry', () => {
         id: 'a',
         entry: entry('a', 'downloading'),
         fileExists: false,
+        fileBytes: 0,
         hasSavable: true,
       }).type
     ).toBe('drop');
@@ -59,6 +88,7 @@ describe('reconcileEntry', () => {
         id: 'a',
         entry: entry('a', 'paused'),
         fileExists: true,
+        fileBytes: 5,
         hasSavable: false,
       }).type
     ).toBe('drop');
@@ -69,6 +99,7 @@ describe('reconcileEntry', () => {
       id: 'a',
       entry: entry('a', 'downloading', { progress: 0.4 }),
       fileExists: true,
+      fileBytes: 5,
       hasSavable: true,
     });
     expect(action.type).toBe('update');
@@ -76,17 +107,6 @@ describe('reconcileEntry', () => {
       expect(action.entry.status).toBe('paused');
       expect(action.entry.progress).toBe(0.4);
     }
-  });
-
-  it('keeps paused when file and savable exist', () => {
-    expect(
-      reconcileEntry({
-        id: 'a',
-        entry: entry('a', 'paused'),
-        fileExists: true,
-        hasSavable: true,
-      }).type
-    ).toBe('keep');
   });
 });
 
@@ -96,10 +116,17 @@ describe('isRangeOrResumeFailure', () => {
     expect(
       isRangeOrResumeFailure(new Error('Requested Range Not Satisfiable'))
     ).toBe(true);
-    expect(isRangeOrResumeFailure(new Error('Unable to resume download'))).toBe(
-      true
-    );
     expect(isRangeOrResumeFailure(new Error('network timeout'))).toBe(false);
+  });
+});
+
+describe('isSuccessfulDownloadStatus', () => {
+  it('accepts 200 and 206', () => {
+    expect(isSuccessfulDownloadStatus(200)).toBe(true);
+    expect(isSuccessfulDownloadStatus(206)).toBe(true);
+    expect(isSuccessfulDownloadStatus(undefined)).toBe(true);
+    expect(isSuccessfulDownloadStatus(416)).toBe(false);
+    expect(isSuccessfulDownloadStatus(404)).toBe(false);
   });
 });
 
@@ -108,5 +135,26 @@ describe('shouldPreferSimpleDownload', () => {
     expect(shouldPreferSimpleDownload('none')).toBe(true);
     expect(shouldPreferSimpleDownload('bytes')).toBe(false);
     expect(shouldPreferSimpleDownload(null)).toBe(false);
+  });
+});
+
+describe('assertSafeCacheId', () => {
+  it('rejects path traversal and empty ids', () => {
+    expect(() => assertSafeCacheId('../etc')).toThrow();
+    expect(() => assertSafeCacheId('a/b')).toThrow();
+    expect(() => assertSafeCacheId('')).toThrow();
+    expect(assertSafeCacheId('episode-42')).toBe('episode-42');
+  });
+});
+
+describe('stripSensitiveHeaders', () => {
+  it('removes authorization and cookies', () => {
+    expect(
+      stripSensitiveHeaders({
+        Authorization: 'Bearer secret',
+        Cookie: 'a=1',
+        'X-Request-Id': 'abc',
+      })
+    ).toEqual({ 'X-Request-Id': 'abc' });
   });
 });

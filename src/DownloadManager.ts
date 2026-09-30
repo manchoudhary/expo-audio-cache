@@ -1,7 +1,8 @@
 import { FileSystem } from './fs';
-import type { DownloadProgressData, DownloadResumable } from './fs';
+import type { DownloadProgressData, DownloadResumable, DownloadResult } from './fs';
 import {
   isRangeOrResumeFailure,
+  isSuccessfulDownloadStatus,
   shouldPreferSimpleDownload,
 } from './reconcile';
 
@@ -16,7 +17,6 @@ type ActiveTask = {
   resumable: DownloadResumable;
   url: string;
   fileUri: string;
-  options: DownloadOptions;
 };
 
 export class DownloadManager {
@@ -32,6 +32,10 @@ export class DownloadManager {
 
   setDefaultHeaders(headers: Record<string, string>): void {
     this.defaultHeaders = headers;
+  }
+
+  isActive(id: string): boolean {
+    return this.active.has(id);
   }
 
   addProgressListener(listener: ProgressListener): () => void {
@@ -110,12 +114,8 @@ export class DownloadManager {
       throw new Error(`expo-audio-cache: no paused download to resume for id "${id}"`);
     }
 
-    const headers = this.mergeHeaders({
-      headers: {
-        ...saved.options.headers,
-        ...options?.headers,
-      },
-    });
+    // Auth headers come from live memory config / call options — never from disk.
+    const headers = this.mergeHeaders(options);
     const downloadOptions = { headers };
 
     try {
@@ -124,7 +124,6 @@ export class DownloadManager {
       if (!isRangeOrResumeFailure(error)) {
         throw error;
       }
-      // Server rejected range resume — wipe partial and do a fresh full download.
       await deleteQuiet(saved.fileUri);
       await this.store.setSavable(id, null);
       return this.simpleDownload(id, saved.url, saved.fileUri, downloadOptions);
@@ -155,7 +154,7 @@ export class DownloadManager {
     id: string,
     url: string,
     fileUri: string,
-    downloadOptions: DownloadOptions
+    downloadOptions: { headers?: Record<string, string> }
   ): Promise<{ localUri: string; bytes: number }> {
     const resumable = FileSystem.createDownloadResumable(
       url,
@@ -169,19 +168,14 @@ export class DownloadManager {
       }
     );
 
-    this.active.set(id, { resumable, url, fileUri, options: downloadOptions });
+    this.active.set(id, { resumable, url, fileUri });
     await this.persistSavable(id);
 
     try {
       const result = await resumable.downloadAsync();
       this.active.delete(id);
       await this.store.setSavable(id, null);
-
-      if (!result?.uri) {
-        throw new Error('expo-audio-cache: download finished without a file URI');
-      }
-
-      return this.statResult(id, result.uri);
+      return this.validateAndStat(id, result, fileUri);
     } catch (error) {
       this.active.delete(id);
       await this.persistSavable(id).catch(() => undefined);
@@ -192,7 +186,7 @@ export class DownloadManager {
   private async resumableResume(
     id: string,
     saved: SavableDownload,
-    downloadOptions: DownloadOptions
+    downloadOptions: { headers?: Record<string, string> }
   ): Promise<{ localUri: string; bytes: number }> {
     const resumable = FileSystem.createDownloadResumable(
       saved.url,
@@ -211,7 +205,6 @@ export class DownloadManager {
       resumable,
       url: saved.url,
       fileUri: saved.fileUri,
-      options: downloadOptions,
     });
     await this.persistSavable(id);
 
@@ -219,12 +212,7 @@ export class DownloadManager {
       const result = await resumable.resumeAsync();
       this.active.delete(id);
       await this.store.setSavable(id, null);
-
-      if (!result?.uri) {
-        throw new Error('expo-audio-cache: resume finished without a file URI');
-      }
-
-      return this.statResult(id, result.uri);
+      return this.validateAndStat(id, result, saved.fileUri);
     } catch (error) {
       this.active.delete(id);
       await this.persistSavable(id).catch(() => undefined);
@@ -232,35 +220,54 @@ export class DownloadManager {
     }
   }
 
-  /**
-   * Non-resumable full download. Used when the server advertises Accept-Ranges: none
-   * or when a resumable attempt fails with a range/resume error.
-   */
   private async simpleDownload(
     id: string,
     url: string,
     fileUri: string,
-    downloadOptions: DownloadOptions
+    downloadOptions: { headers?: Record<string, string> }
   ): Promise<{ localUri: string; bytes: number }> {
     await deleteQuiet(fileUri);
     await this.store.setSavable(id, null);
     this.emitProgress(id, 0);
 
     const result = await FileSystem.downloadAsync(url, fileUri, downloadOptions);
-    if (!result?.uri) {
-      throw new Error('expo-audio-cache: simple download finished without a file URI');
-    }
-    return this.statResult(id, result.uri);
+    return this.validateAndStat(id, result, fileUri);
   }
 
-  private async statResult(
+  private async validateAndStat(
     id: string,
-    uri: string
+    result: DownloadResult | undefined,
+    expectedUri: string
   ): Promise<{ localUri: string; bytes: number }> {
-    const info = await FileSystem.getInfoAsync(uri);
+    if (!result?.uri) {
+      await deleteQuiet(expectedUri);
+      throw new Error('expo-audio-cache: download finished without a file URI');
+    }
+
+    if (!isSuccessfulDownloadStatus(result.status)) {
+      await deleteQuiet(result.uri);
+      throw new Error(
+        `expo-audio-cache: unexpected HTTP status ${result.status ?? 'unknown'}`
+      );
+    }
+
+    // 416 should have been handled as range failure; belt-and-suspenders.
+    if (result.status === 416) {
+      await deleteQuiet(result.uri);
+      throw new Error('expo-audio-cache: HTTP 416 Range Not Satisfiable');
+    }
+
+    const info = await FileSystem.getInfoAsync(result.uri);
     const bytes = info.exists && 'size' in info ? (info.size ?? 0) : 0;
+    if (!info.exists || bytes <= 0) {
+      await deleteQuiet(result.uri);
+      throw new Error(
+        'expo-audio-cache: download produced an empty or missing file (invalid audio response)'
+      );
+    }
+
     this.emitProgress(id, 1);
-    return { localUri: uri, bytes };
+    return { localUri: result.uri, bytes };
   }
 
   private async serverPrefersSimpleDownload(
@@ -269,9 +276,12 @@ export class DownloadManager {
   ): Promise<boolean> {
     try {
       const response = await fetch(url, { method: 'HEAD', headers });
+      if (!response.ok && response.status !== 405) {
+        // Non-OK HEAD: still attempt download; downloadAsync will surface real errors.
+        return false;
+      }
       return shouldPreferSimpleDownload(response.headers.get('accept-ranges'));
     } catch {
-      // HEAD may be blocked; try resumable and fall back on error.
       return false;
     }
   }
@@ -282,10 +292,10 @@ export class DownloadManager {
       return;
     }
     const snapshot = task.resumable.savable();
+    // Intentionally omit snapshot.options.headers — never persist JWTs.
     await this.store.setSavable(id, {
       url: snapshot.url,
       fileUri: snapshot.fileUri,
-      options: snapshot.options ?? task.options,
       resumeData: snapshot.resumeData,
     } satisfies SavableDownload);
   }
