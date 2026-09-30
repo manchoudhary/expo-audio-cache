@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.0
+
+- First stable release metadata for npm (`author`, `repository`, Expo-focused keywords)
+- Includes reconcile-on-startup, range-download fallback, and auth header docs from 0.1.1
+
 ## 0.1.1
 
 - Reconcile index with disk on startup (reset stuck downloading/paused without partial files)

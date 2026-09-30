@@ -1,7 +1,17 @@
 {
   "name": "expo-audio-cache",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "description": "Persistent offline download and cache layer for expo-audio",
+  "author": "manchoudhary",
+  "license": "MIT",
+  "homepage": "https://github.com/manchoudhary/expo-audio-cache#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/manchoudhary/expo-audio-cache.git"
+  },
+  "bugs": {
+    "url": "https://github.com/manchoudhary/expo-audio-cache/issues"
+  },
   "main": "./lib/commonjs/index.js",
   "module": "./lib/module/index.js",
   "types": "./lib/typescript/index.d.ts",
@@ -32,15 +42,17 @@
     "example": "yarn --cwd example"
   },
   "keywords": [
+    "react-native",
     "expo",
     "expo-audio",
-    "offline",
+    "expo-file-system",
     "cache",
+    "offline",
+    "audio-player",
     "download",
-    "react-native",
-    "audio"
+    "audio",
+    "resumable"
   ],
-  "license": "MIT",
   "peerDependencies": {
     "expo-file-system": "*",
     "react": "*",
