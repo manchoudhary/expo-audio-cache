@@ -52,6 +52,32 @@ export function Episode() {
 const source = await resolveSource(id, url); // { uri: local or remote }
 ```
 
+## Authenticated / private audio (JWT headers)
+
+Many production apps fetch private audio behind auth. Pass default headers once via `configureAudioCache`, and optionally override per download:
+
+```tsx
+configureAudioCache({
+  maxBytes: 500 * 1024 * 1024,
+  headers: {
+    Authorization: `Bearer ${accessToken}`,
+  },
+});
+
+// Uses the configured Authorization header
+await download('episode-42', 'https://api.example.com/audio/42.mp3');
+
+// Or override / add headers for a single request
+await download('episode-42', 'https://api.example.com/audio/42.mp3', {
+  headers: {
+    Authorization: `Bearer ${freshToken}`,
+    'X-Tenant-Id': tenantId,
+  },
+});
+```
+
+Refresh tokens by calling `configureAudioCache({ headers: { Authorization: ... } })` again when the JWT rotates (safe to call more than once).
+
 ## API
 
 | Method | Description |
@@ -68,6 +94,8 @@ const source = await resolveSource(id, url); // { uri: local or remote }
 Statuses: `idle` · `downloading` · `paused` · `ready` · `error`.
 
 Default `maxBytes` is **500MB**. After each successful download, least-recently-used **ready** entries are deleted until under budget. In-flight downloads are never evicted.
+
+On startup the cache **reconciles** `index.json` with files on disk: missing ready files are dropped, and stuck `downloading` / `paused` entries without a partial file (or resume snapshot) are reset so IDs never stay in limbo after a crash. If a server rejects HTTP range / resume (or advertises `Accept-Ranges: none`), the library falls back to a fresh non-resumable download.
 
 ## Example app
 
@@ -87,7 +115,7 @@ documentDirectory/expo-audio-cache/
   files/<id>.mp3      # audio bytes
 ```
 
-Downloads use `expo-file-system` resumable APIs (`expo-file-system/legacy` on SDK 54+, package root on older SDKs).
+Downloads use `expo-file-system` resumable APIs (`expo-file-system/legacy` on SDK 54+, package root on older SDKs), with a simple `downloadAsync` fallback when ranges are unsupported.
 
 ## License
 

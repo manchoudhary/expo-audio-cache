@@ -1,6 +1,6 @@
 {
   "name": "expo-audio-cache",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Persistent offline download and cache layer for expo-audio",
   "main": "./lib/commonjs/index.js",
   "module": "./lib/module/index.js",

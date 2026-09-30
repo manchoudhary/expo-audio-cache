@@ -1,4 +1,5 @@
 import { FileSystem } from './fs';
+import { reconcileEntry } from './reconcile';
 
 import type { CacheEntry, IndexFile, SavableDownload } from './types';
 
@@ -62,6 +63,7 @@ export class CacheStore {
         const parsed = JSON.parse(raw) as IndexFile;
         if (parsed?.version === INDEX_VERSION && parsed.entries && parsed.savable) {
           this.index = parsed;
+          await this.reconcileWithFileSystem();
           return;
         }
       } catch {
@@ -70,6 +72,56 @@ export class CacheStore {
     }
     this.index = emptyIndex();
     await this.persist();
+  }
+
+  /**
+   * After a crash or swipe-away, align index.json with what is actually on disk
+   * so IDs are never stuck forever in downloading/paused limbo.
+   */
+  private async reconcileWithFileSystem(): Promise<void> {
+    let dirty = false;
+    const ids = Object.keys(this.index.entries);
+
+    for (const id of ids) {
+      const entry = this.index.entries[id];
+      if (!entry) {
+        continue;
+      }
+      const exists = await pathExists(entry.localUri);
+      const action = reconcileEntry({
+        id,
+        entry,
+        fileExists: exists,
+        hasSavable: Boolean(this.index.savable[id]),
+      });
+
+      if (action.type === 'drop') {
+        delete this.index.entries[id];
+        delete this.index.savable[id];
+        if (exists) {
+          await deleteIfExists(entry.localUri);
+        }
+        dirty = true;
+      } else if (action.type === 'update') {
+        this.index.entries[id] = action.entry;
+        dirty = true;
+      }
+    }
+
+    for (const id of Object.keys(this.index.savable)) {
+      if (!this.index.entries[id]) {
+        const orphan = this.index.savable[id];
+        delete this.index.savable[id];
+        if (orphan?.fileUri) {
+          await deleteIfExists(orphan.fileUri);
+        }
+        dirty = true;
+      }
+    }
+
+    if (dirty) {
+      await this.persist();
+    }
   }
 
   getEntry(id: string): CacheEntry | null {
@@ -143,6 +195,15 @@ export function extensionFromUrl(url: string): string {
     // ignore invalid URL
   }
   return '.mp3';
+}
+
+async function pathExists(uri: string): Promise<boolean> {
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    return info.exists;
+  } catch {
+    return false;
+  }
 }
 
 async function deleteIfExists(uri: string): Promise<void> {

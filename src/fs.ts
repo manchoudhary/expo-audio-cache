@@ -66,6 +66,11 @@ export type ExpoFileSystemModule = {
     fileUri: string,
     options?: { idempotent?: boolean }
   ) => Promise<void>;
+  downloadAsync: (
+    uri: string,
+    fileUri: string,
+    options?: { headers?: Record<string, string> }
+  ) => Promise<DownloadResult>;
   createDownloadResumable: (
     uri: string,
     fileUri: string,
