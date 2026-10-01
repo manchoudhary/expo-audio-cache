@@ -1,5 +1,6 @@
 import { useAudioPlayer } from 'expo-audio';
 import {
+  clear,
   configureAudioCache,
   download,
   getStats,
@@ -24,6 +25,12 @@ configureAudioCache({
 });
 
 export default function App() {
+  // Remount screen after clear so the hook resets to idle.
+  const [epoch, setEpoch] = useState(0);
+  return <ExampleScreen key={epoch} onCleared={() => setEpoch((e) => e + 1)} />;
+}
+
+function ExampleScreen({ onCleared }: { onCleared: () => void }) {
   const { status, progress, localUri, error } = useAudioCacheDownload(TRACK_ID);
   const [statsText, setStatsText] = useState('—');
   const [busy, setBusy] = useState(false);
@@ -57,6 +64,21 @@ export default function App() {
     }
   }
 
+  async function onClear() {
+    setBusy(true);
+    try {
+      if (player.playing) {
+        player.pause();
+      }
+      await clear();
+      await refreshStats();
+      onCleared();
+    } catch (e) {
+      console.warn(e);
+      setBusy(false);
+    }
+  }
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>expo-audio-cache</Text>
@@ -80,7 +102,9 @@ export default function App() {
         <Button
           title="Download"
           onPress={onDownload}
-          disabled={busy || status === 'downloading' || status === 'ready'}
+          disabled={
+            busy || status === 'downloading' || status === 'ready'
+          }
         />
         <Button
           title={player.playing ? 'Pause' : 'Play'}
@@ -98,9 +122,18 @@ export default function App() {
         />
       </View>
 
+      <View style={styles.row}>
+        <Button
+          title="Clear cache"
+          onPress={onClear}
+          color="#f87171"
+        />
+      </View>
+
       <Text style={styles.hint}>
-        After Ready, enable airplane mode and press Play to confirm offline
-        playback from documentDirectory.
+        After Ready: Airplane Mode + Play = offline proof. To test errors: Clear
+        → Airplane + Wi‑Fi off → Download should show Status: error (not hang).
+        Clear also works while a download is stuck.
       </Text>
     </View>
   );

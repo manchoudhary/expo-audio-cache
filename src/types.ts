@@ -12,6 +12,12 @@ export type AudioCacheConfig = {
   maxBytes?: number;
   /** Default HTTP headers for downloads. */
   headers?: Record<string, string>;
+  /**
+   * Max time for a download attempt (including resume). Default: 30_000 ms.
+   * Prevents indefinite `downloading` when the device is offline — expo-file-system
+   * often never rejects in that case.
+   */
+  downloadTimeoutMs?: number;
 };
 
 export type CacheEntry = {

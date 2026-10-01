@@ -82,6 +82,30 @@ export function isRangeOrResumeFailure(error: unknown): boolean {
   );
 }
 
+/** True for offline / DNS / aborted connectivity probes (RN + browsers). */
+export function isNetworkOrAbortFailure(error: unknown): boolean {
+  if (error != null && typeof error === 'object' && 'name' in error) {
+    const name = String((error as { name: unknown }).name);
+    if (name === 'AbortError' || name === 'TimeoutError') {
+      return true;
+    }
+  }
+  const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    msg.includes('network request failed') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('network error') ||
+    msg.includes('the internet connection appears to be offline') ||
+    msg.includes('aborted') ||
+    msg.includes('abort') ||
+    msg.includes('timed out') ||
+    msg.includes('timeout') ||
+    msg.includes('could not connect') ||
+    msg.includes('connection refused') ||
+    msg.includes('unreachable')
+  );
+}
+
 export function shouldPreferSimpleDownload(
   acceptRangesHeader: string | null
 ): boolean {

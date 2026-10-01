@@ -84,7 +84,7 @@ Authorization headers are used for the network request only — they are **never
 
 | Method | Description |
 | --- | --- |
-| `configureAudioCache({ directoryName?, maxBytes?, headers? })` | Optional setup (defaults applied on first use) |
+| `configureAudioCache({ directoryName?, maxBytes?, headers?, downloadTimeoutMs? })` | Optional setup (defaults applied on first use) |
 | `download(id, url, options?)` | Download into documentDirectory; resumes metadata on success |
 | `pause(id)` / `resume(id)` | Pause / resume a resumable download (survives app kill) |
 | `cancel(id)` / `remove(id)` / `clear()` | Abort or delete cached files |
@@ -96,6 +96,8 @@ Authorization headers are used for the network request only — they are **never
 Statuses: `idle` · `downloading` · `paused` · `ready` · `error`.
 
 Default `maxBytes` is **500MB**. After each successful download, least-recently-used **ready** entries are deleted until under budget. In-flight downloads are never evicted.
+
+Default `downloadTimeoutMs` is **30 seconds**. Offline devices often leave `expo-file-system` hung forever; the library fails a short connectivity probe first and otherwise times out so status becomes `error` instead of stuck `downloading`.
 
 On startup the cache **reconciles** `index.json` with files on disk: missing ready files are dropped, and stuck `downloading` / `paused` entries without a partial file (or resume snapshot) are reset so IDs never stay in limbo after a crash. If a server rejects HTTP range / resume (or advertises `Accept-Ranges: none`), the library falls back to a fresh non-resumable download.
 

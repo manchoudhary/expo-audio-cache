@@ -37,6 +37,9 @@ class AudioCacheController {
     if (config.headers) {
       this.downloads.setDefaultHeaders(config.headers);
     }
+    if (typeof config.downloadTimeoutMs === 'number' && config.downloadTimeoutMs > 0) {
+      this.downloads.setDownloadTimeoutMs(config.downloadTimeoutMs);
+    }
     this.configured = true;
   }
 
@@ -305,8 +308,10 @@ class AudioCacheController {
   }
 
   async clear(): Promise<void> {
+    this.ensureConfigured();
+    // Cancel outside the queue so a hung download can still be cleared.
+    await this.downloads.cancelAll();
     return this.enqueue(async () => {
-      this.ensureConfigured();
       await this.store.clearAll();
     });
   }

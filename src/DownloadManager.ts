@@ -1,6 +1,7 @@
 import { FileSystem } from './fs';
 import type { DownloadProgressData, DownloadResumable, DownloadResult } from './fs';
 import {
+  isNetworkOrAbortFailure,
   isRangeOrResumeFailure,
   isSuccessfulDownloadStatus,
   shouldPreferSimpleDownload,
@@ -19,9 +20,15 @@ type ActiveTask = {
   fileUri: string;
 };
 
+/** Default overall download timeout — expo-file-system can hang forever offline. */
+export const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
+/** Short HEAD probe so offline fails before the native downloader hangs. */
+const CONNECTIVITY_PROBE_MS = 8_000;
+
 export class DownloadManager {
   private store: CacheStore;
   private defaultHeaders: Record<string, string>;
+  private downloadTimeoutMs = DEFAULT_DOWNLOAD_TIMEOUT_MS;
   private active = new Map<string, ActiveTask>();
   private progressListeners = new Set<ProgressListener>();
 
@@ -34,8 +41,18 @@ export class DownloadManager {
     this.defaultHeaders = headers;
   }
 
+  setDownloadTimeoutMs(ms: number): void {
+    if (typeof ms === 'number' && ms > 0) {
+      this.downloadTimeoutMs = ms;
+    }
+  }
+
   isActive(id: string): boolean {
     return this.active.has(id);
+  }
+
+  activeIds(): string[] {
+    return [...this.active.keys()];
   }
 
   addProgressListener(listener: ProgressListener): () => void {
@@ -73,21 +90,23 @@ export class DownloadManager {
     const headers = this.mergeHeaders(options);
     const downloadOptions = { headers };
 
-    const preferSimple = await this.serverPrefersSimpleDownload(url, headers);
-    if (preferSimple) {
-      return this.simpleDownload(id, url, fileUri, downloadOptions);
-    }
-
-    try {
-      return await this.resumableDownload(id, url, fileUri, downloadOptions);
-    } catch (error) {
-      if (!isRangeOrResumeFailure(error)) {
-        throw error;
+    return this.runWithTimeout(id, async () => {
+      const preferSimple = await this.serverPrefersSimpleDownload(url, headers);
+      if (preferSimple) {
+        return this.simpleDownload(id, url, fileUri, downloadOptions);
       }
-      await deleteQuiet(fileUri);
-      await this.store.setSavable(id, null);
-      return this.simpleDownload(id, url, fileUri, downloadOptions);
-    }
+
+      try {
+        return await this.resumableDownload(id, url, fileUri, downloadOptions);
+      } catch (error) {
+        if (!isRangeOrResumeFailure(error)) {
+          throw error;
+        }
+        await deleteQuiet(fileUri);
+        await this.store.setSavable(id, null);
+        return this.simpleDownload(id, url, fileUri, downloadOptions);
+      }
+    });
   }
 
   async pause(id: string): Promise<void> {
@@ -118,16 +137,18 @@ export class DownloadManager {
     const headers = this.mergeHeaders(options);
     const downloadOptions = { headers };
 
-    try {
-      return await this.resumableResume(id, saved, downloadOptions);
-    } catch (error) {
-      if (!isRangeOrResumeFailure(error)) {
-        throw error;
+    return this.runWithTimeout(id, async () => {
+      try {
+        return await this.resumableResume(id, saved, downloadOptions);
+      } catch (error) {
+        if (!isRangeOrResumeFailure(error)) {
+          throw error;
+        }
+        await deleteQuiet(saved.fileUri);
+        await this.store.setSavable(id, null);
+        return this.simpleDownload(id, saved.url, saved.fileUri, downloadOptions);
       }
-      await deleteQuiet(saved.fileUri);
-      await this.store.setSavable(id, null);
-      return this.simpleDownload(id, saved.url, saved.fileUri, downloadOptions);
-    }
+    });
   }
 
   async cancel(id: string): Promise<void> {
@@ -147,6 +168,43 @@ export class DownloadManager {
 
     if (fileUri) {
       await deleteQuiet(fileUri);
+    }
+  }
+
+  async cancelAll(): Promise<void> {
+    const ids = this.activeIds();
+    for (const id of ids) {
+      await this.cancel(id);
+    }
+  }
+
+  private async runWithTimeout<T>(id: string, work: () => Promise<T>): Promise<T> {
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutMs = this.downloadTimeoutMs;
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        reject(
+          new Error(
+            `expo-audio-cache: download timed out after ${timeoutMs}ms (network may be offline)`
+          )
+        );
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([work(), timeoutPromise]);
+    } catch (error) {
+      if (timedOut) {
+        await this.cancel(id).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
     }
   }
 
@@ -270,19 +328,36 @@ export class DownloadManager {
     return { localUri: result.uri, bytes };
   }
 
+  /**
+   * HEAD probe: detect Accept-Ranges, and fail fast when the device is offline.
+   * expo-file-system downloadAsync often hangs indefinitely with no network.
+   */
   private async serverPrefersSimpleDownload(
     url: string,
     headers: Record<string, string>
   ): Promise<boolean> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CONNECTIVITY_PROBE_MS);
     try {
-      const response = await fetch(url, { method: 'HEAD', headers });
+      const response = await fetch(url, {
+        method: 'HEAD',
+        headers,
+        signal: controller.signal,
+      });
       if (!response.ok && response.status !== 405) {
         // Non-OK HEAD: still attempt download; downloadAsync will surface real errors.
         return false;
       }
       return shouldPreferSimpleDownload(response.headers.get('accept-ranges'));
-    } catch {
+    } catch (error) {
+      if (isNetworkOrAbortFailure(error)) {
+        throw new Error(
+          'expo-audio-cache: network request failed (offline or unreachable)'
+        );
+      }
       return false;
+    } finally {
+      clearTimeout(timer);
     }
   }
 

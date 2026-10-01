@@ -1,5 +1,6 @@
 import {
   assertSafeCacheId,
+  isNetworkOrAbortFailure,
   isRangeOrResumeFailure,
   isSuccessfulDownloadStatus,
   reconcileEntry,
@@ -156,5 +157,27 @@ describe('stripSensitiveHeaders', () => {
         'X-Request-Id': 'abc',
       })
     ).toEqual({ 'X-Request-Id': 'abc' });
+  });
+});
+
+describe('isNetworkOrAbortFailure', () => {
+  it('detects React Native offline errors', () => {
+    expect(isNetworkOrAbortFailure(new Error('Network request failed'))).toBe(
+      true
+    );
+    expect(isNetworkOrAbortFailure(new Error('Failed to fetch'))).toBe(true);
+  });
+
+  it('detects AbortError', () => {
+    const err = new Error('The operation was aborted');
+    err.name = 'AbortError';
+    expect(isNetworkOrAbortFailure(err)).toBe(true);
+  });
+
+  it('ignores unrelated errors', () => {
+    expect(isNetworkOrAbortFailure(new Error('HTTP 500'))).toBe(false);
+    expect(isNetworkOrAbortFailure(new Error('unexpected HTTP status 404'))).toBe(
+      false
+    );
   });
 });

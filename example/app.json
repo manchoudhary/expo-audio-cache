@@ -1,15 +1,18 @@
 {
   "expo": {
-    "name": "example",
-    "slug": "example",
+    "name": "expo-audio-cache-example",
+    "slug": "expo-audio-cache-example",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "scheme": "expoaudiocache",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.manchoudhary.expoaudiocache.example"
     },
     "android": {
+      "package": "com.manchoudhary.expoaudiocache.example",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
